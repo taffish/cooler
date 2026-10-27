@@ -1,0 +1,234 @@
+#!/opt/cooler/bin/python
+"""Serve unchanged cooler show through Matplotlib WebAgg with bounded lifecycle."""
+import argparse
+import math
+import os
+from pathlib import Path
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+
+def emit(message, *, error=False):
+    """Best-effort diagnostics must never prevent lifecycle cleanup."""
+    stream = sys.stderr if error else sys.stdout
+    try:
+        print(message, file=stream, flush=True)
+        return True
+    except (OSError, ValueError):
+        # A failed flush can leave bytes buffered. Redirect the actual descriptor
+        # so Python's final flush cannot replace the intended exit status with 120.
+        try:
+            with open(os.devnull, "w") as sink:
+                os.dup2(sink.fileno(), stream.fileno())
+        except (OSError, ValueError):
+            # Closed/replaced streams may not expose a usable descriptor.
+            try:
+                sink = open(os.devnull, "w")
+                if error:
+                    sys.stderr = sink
+                else:
+                    sys.stdout = sink
+            except OSError:
+                if error:
+                    sys.stderr = None
+                else:
+                    sys.stdout = None
+        return False
+
+
+def port(value):
+    number = int(value)
+    if not 1 <= number <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return number
+
+
+def owns_listener(pid, number):
+    """Require the listening socket to belong to our still-live WebAgg child."""
+    try:
+        sockets = set()
+        for fd in Path(f"/proc/{pid}/fd").iterdir():
+            try:
+                sockets.add(os.readlink(fd))
+            except FileNotFoundError:
+                # Unrelated request/file descriptors can close during the scan.
+                # Their disappearance does not invalidate the owned listener.
+                continue
+        for line in Path("/proc/net/tcp").read_text().splitlines()[1:]:
+            fields = line.split()
+            if (int(fields[1].split(":")[1], 16) == number
+                    and fields[3] == "0A" and f"socket:[{fields[9]}]" in sockets):
+                return True
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        return False
+    return False
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("cool_uri", help="existing .cool or FILE::/resolutions/N")
+    p.add_argument("region", help="zero-based half-open region, e.g. chr1:0-1000000")
+    p.add_argument("--port", type=port, default=8000)
+    p.add_argument("--host-port", type=port)
+    p.add_argument("--bind", choices=("127.0.0.1", "0.0.0.0"), default="127.0.0.1")
+    p.add_argument("--url-host", choices=("127.0.0.1", "localhost"), default="127.0.0.1")
+    p.add_argument("--label", default="Cooler matrix", help="session label in the startup card")
+    p.add_argument("--ready-timeout", type=float, default=60)
+    p.add_argument("--range2")
+    p.add_argument("--scale", choices=("linear", "log2", "log10"), default="log10")
+    p.add_argument("--cmap", default="YlOrRd")
+    p.add_argument("--balanced", action="store_true")
+    p.add_argument("--weight-name")
+    p.add_argument("--zmin", type=float)
+    p.add_argument("--zmax", type=float)
+    a = p.parse_args()
+    if not math.isfinite(a.ready_timeout) or not 0 < a.ready_timeout <= 600:
+        p.error("--ready-timeout must be finite and in (0, 600]")
+    if any(ord(c) < 32 for c in a.label) or len(a.label) > 200:
+        p.error("--label must be a single line of at most 200 characters")
+    source = Path(a.cool_uri.split("::", 1)[0])
+    if not source.is_file():
+        p.error("input is missing or not a file; create it first with: "
+                "cooler load --format bg2 chrom.sizes:10000 pixels.bg2 sample.cool")
+    suffix = "::" + a.cool_uri.split("::", 1)[1] if "::" in a.cool_uri else ""
+    cool_uri = str(source.resolve()) + suffix
+    try:
+        with socket.socket() as probe:
+            probe.bind((a.bind, a.port))
+    except OSError as error:
+        p.error(f"cannot bind {a.bind}:{a.port}: {error}; choose a free port")
+    state = {"signal": 0}
+    def stop(signum, frame):
+        if not state["signal"]:
+            state["signal"] = signum
+        # Do not write to buffered streams inside a signal handler: a signal
+        # can interrupt the startup card's own write and cause reentrant I/O.
+    old = {s: signal.signal(s, stop) for s in (signal.SIGINT, signal.SIGTERM)}
+    root = None
+    child = None
+    log = None
+    code = 1
+    try:
+        root = Path(tempfile.mkdtemp(prefix="cooler-gui-", dir="/tmp"))
+        # mkdtemp is private at creation, independent of a permissive umask.
+        config = root / "matplotlib"
+        config.mkdir(mode=0o700)
+        (config / "matplotlibrc").write_text(
+            f"backend: WebAgg\nwebagg.address: {a.bind}\nwebagg.port: {a.port}\n"
+            # WebAgg counts attempts, not retries after the initial port.
+            "webagg.port_retries: 1\nwebagg.open_in_browser: False\n")
+        log = root / "webagg.log"
+        host_port = a.host_port or a.port
+        announced = emit(f"Cooler GUI is starting. {a.label}\n"
+              f"Open: http://{a.url_host}:{host_port}/1\n"
+              f"Remote: ssh -N -L {host_port}:127.0.0.1:{host_port} user@server\n"
+              "Press Ctrl-C to stop this GUI session.\n"
+              "Export: use PNG/SVG/PDF; streamed PGF does not support this raster matrix.\n"
+              f"Internal log: {log}\n"
+              "Session files are temporary and removed on exit.")
+        if not announced:
+            raise RuntimeError("startup output is unavailable; GUI was not started")
+        if not state["signal"]:
+            env = dict(os.environ, MPLBACKEND="WebAgg", MPLCONFIGDIR=str(config),
+                       XDG_CACHE_HOME=str(root), PYTHONUNBUFFERED="1",
+                       PYTHONDONTWRITEBYTECODE="1", HOME=str(root))
+            argv = ["/opt/cooler/bin/cooler", "show", cool_uri, a.region,
+                    "--scale", a.scale, "--cmap", a.cmap]
+            if a.balanced:
+                argv.append("--balanced")
+            for name in ("range2", "weight_name", "zmin", "zmax"):
+                value = getattr(a, name)
+                if value is not None:
+                    argv.extend(["--" + name.replace("_", "-"), str(value)])
+            # The signal handler records rather than raises: Popen ownership is
+            # captured even if INT/TERM arrives during child creation.
+            with log.open("wb") as stream:
+                child = subprocess.Popen(argv, env=env, stdout=stream,
+                                         stderr=subprocess.STDOUT, start_new_session=True,
+                                         cwd=root)
+            if child.pid <= 1:
+                raise RuntimeError("invalid WebAgg child identity")
+            deadline = time.monotonic() + a.ready_timeout
+            ready = False
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            while not state["signal"]:
+                if child.poll() is not None:
+                    raise RuntimeError(f"WebAgg child exited unexpectedly ({child.returncode})")
+                if not ready:
+                    if time.monotonic() > deadline:
+                        raise RuntimeError("WebAgg readiness timed out")
+                    if owns_listener(child.pid, a.port):
+                        try:
+                            with opener.open(f"http://127.0.0.1:{a.port}/1", timeout=0.5) as response:
+                                page = response.read(200000).decode("utf-8")
+                            if "mpl.js" in page and child.poll() is None and owns_listener(child.pid, a.port):
+                                if not emit("Cooler GUI is ready."):
+                                    raise RuntimeError("ready output is unavailable; stopping GUI")
+                                ready = True
+                        except (OSError, urllib.error.URLError):
+                            pass
+                elif not owns_listener(child.pid, a.port):
+                    raise RuntimeError("WebAgg lost its owned listening socket")
+                time.sleep(0.05)
+        code = 128 + state["signal"] if state["signal"] else 1
+    except Exception as error:
+        emit(f"cooler-gui: {error}", error=True)
+        if log is not None and log.exists():
+            try:
+                emit(log.read_text(errors="replace")[-10000:], error=True)
+            except OSError as log_error:
+                emit(f"cooler-gui: cannot read session log: {log_error}", error=True)
+        code = 128 + state["signal"] if state["signal"] else 1
+    finally:
+        cleanup_errors = []
+        try:
+            if state["signal"]:
+                emit(f"Cooler GUI stopping ({signal.Signals(state['signal']).name}).")
+        finally:
+            # Each cleanup step has its own guard. Neither diagnostics nor a
+            # failed child wait may skip directory cleanup or handler restoration.
+            try:
+                if child is not None and child.pid > 1 and child.poll() is None:
+                    try:
+                        os.killpg(child.pid, signal.SIGTERM)
+                        child.wait(timeout=4)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(child.pid, signal.SIGKILL)
+                        child.wait(timeout=4)
+                    except ProcessLookupError:
+                        child.wait(timeout=4)
+            except (OSError, subprocess.TimeoutExpired) as error:
+                cleanup_errors.append(f"WebAgg cleanup failed: {error}")
+            finally:
+                try:
+                    if root is not None:
+                        # Only the private root allocated by this invocation.
+                        shutil.rmtree(root)
+                except OSError as error:
+                    cleanup_errors.append(f"session cleanup failed: {error}")
+                finally:
+                    if state["signal"]:
+                        code = 128 + state["signal"]
+                    elif cleanup_errors:
+                        code = 1
+        try:
+            if cleanup_errors:
+                emit("cooler-gui: " + "; ".join(cleanup_errors), error=True)
+            else:
+                emit("Cooler GUI stopped; session files removed.")
+        finally:
+            if state["signal"]:
+                code = 128 + state["signal"]
+            for sig, handler in old.items():
+                signal.signal(sig, handler)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

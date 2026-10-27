@@ -1,174 +1,87 @@
-ARG COOLER_VERSION=0.10.4
-ARG COOLER_WHEEL_SHA256=f245de63d05cd9e25961f85a8226929faa3607575be38dd5b6e33a200cef319e
-ARG COOLER_SDIST_SHA256=1c25626d5970cedd1ff651966c36d97073a697a7830d369b43b2d0e59ce405ba
-ARG COOLER_SDIST_URL=https://files.pythonhosted.org/packages/64/76/2527cef69c2f71f18341be4e29e017bfe2af054afe8b2d106465391fc51e/cooler-0.10.4.tar.gz
-ARG DEBIAN_MIRROR=http://deb.debian.org/debian
-ARG DEBIAN_SECURITY_MIRROR=http://deb.debian.org/debian-security
-ARG PIP_INDEX_URL=https://pypi.org/simple
+# The multi-platform base digest fixes today's Python 3.12.15 contents, not
+# future registry availability. Recover identical verified bytes if removed;
+# adopting another digest requires a new reviewed build and full validation.
+ARG BASE=python:3.12-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70
+FROM ${BASE} AS builder
 
-FROM python:3.12-slim-bookworm AS builder
+ENV DEBIAN_FRONTEND=noninteractive PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 PIP_DEFAULT_TIMEOUT=120 PIP_RETRIES=5 PYTHONNOUSERSITE=1
+# Debian packages are resolved from an active repository and can change or
+# disappear. Inspect repository errors first; do not weaken integrity checks.
+# This is not an archival APT snapshot or a promise of permanent rebuildability.
+RUN apt-get -o Acquire::Retries=3 update \
+ && apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+      ca-certificates gcc g++ make libc6-dev zlib1g-dev \
+ && rm -rf /var/lib/apt/lists/*
 
-ARG COOLER_VERSION
-ARG COOLER_WHEEL_SHA256
-ARG COOLER_SDIST_SHA256
-ARG COOLER_SDIST_URL
-ARG DEBIAN_MIRROR
-ARG DEBIAN_SECURITY_MIRROR
-ARG PIP_INDEX_URL
+WORKDIR /tmp/build
+# The primary wheel and source archive are pinned and checked. PyPI transitive
+# dependencies/build requirements still resolve dynamically: the recorded
+# inventory is a build receipt, not an input lock. Missing or changed artifacts
+# must be investigated; changing materials requires a reviewed update/retest,
+# never merely replacing an expected hash or removing a failed assertion.
+RUN python -m venv /opt/cooler \
+ && /opt/cooler/bin/python -m pip install --upgrade pip setuptools wheel \
+ && /opt/cooler/bin/python -m pip download --no-deps --only-binary=:all: cooler==0.11.0 \
+ && echo 'c38930549945bb261174d0598528bc4139206e0e3053f4809f24ed4e673b2048  cooler-0.11.0-py3-none-any.whl' | sha256sum -c - \
+ && /opt/cooler/bin/python -m pip install './cooler-0.11.0-py3-none-any.whl[all]' \
+ && /opt/cooler/bin/python -m pip check \
+ && python -c "import urllib.request; urllib.request.urlretrieve('https://files.pythonhosted.org/packages/9c/f3/12195163b5719affed7638f42a8def1d86dbf057cc240d165b58b340bb9c/cooler-0.11.0.tar.gz', 'cooler.tar.gz')" \
+ && echo '11a527bde867c31fe392589d0f947056b9200a70cdb033866ddfce3db031a91a  cooler.tar.gz' | sha256sum -c - \
+ && tar -xzf cooler.tar.gz \
+ && install -d -m 0755 /opt/cooler/share/doc/cooler /opt/cooler/share/licenses/cooler /opt/cooler/share/testdata \
+ && install -m 0644 cooler-0.11.0/LICENSE /opt/cooler/share/licenses/cooler/LICENSE \
+ && cp -a cooler-0.11.0/README.md cooler-0.11.0/CHANGES.md cooler-0.11.0/CITATION.cff cooler-0.11.0/pyproject.toml /opt/cooler/share/doc/cooler/ \
+ && cp -a cooler-0.11.0/tests/data/. /opt/cooler/share/testdata/ \
+ && /opt/cooler/bin/python -m pip freeze --all > /opt/cooler/share/doc/cooler/requirements.freeze.txt \
+ && /opt/cooler/bin/python -m pip inspect > /opt/cooler/share/doc/cooler/python-inventory.json \
+ && find /opt/cooler -type d -name __pycache__ -prune -exec rm -rf '{}' + \
+ && find /opt/cooler/share -type d -exec chmod 0755 '{}' + \
+ && find /opt/cooler/share -type f -exec chmod 0644 '{}' +
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-ENV PIP_NO_CACHE_DIR=1
-ENV PIP_DEFAULT_TIMEOUT=120
-ENV PIP_RETRIES=5
-ENV PIP_INDEX_URL=${PIP_INDEX_URL}
-ENV PYTHONNOUSERSITE=1
-ENV MPLBACKEND=Agg
-ENV XDG_CACHE_HOME=/tmp
+# Pairix 0.3.9 fixes the upstream compiler compatibility issue. Keep its own
+# source identity and licenses; do not shadow Debian's bgzip with its older one.
+# GitHub/PyPI archive availability is not guaranteed; preserve these checksums.
+# An explicitly selected verified mirror can recover the identical archive when
+# a long download is interrupted. The source hashes below are never overridden.
+ARG PAIRIX_SOURCE_URL=https://codeload.github.com/4dn-dcic/pairix/tar.gz/refs/tags/0.3.9
+ARG PYPAIRIX_SOURCE_URL=https://files.pythonhosted.org/packages/03/dd/c07c30421975664c8b3716542c2c22331606856019852229bf6974fd5caa/pypairix-0.3.9.tar.gz
+RUN python -c "import os, urllib.request; urllib.request.urlretrieve(os.environ['PAIRIX_SOURCE_URL'], 'pairix.tar.gz'); urllib.request.urlretrieve(os.environ['PYPAIRIX_SOURCE_URL'], 'pypairix.tar.gz')" \
+ && echo '84851aac4fe7aa74988a107ae7b93fbd4b191fd96459ca81fffbdbd39b041d2c  pairix.tar.gz' | sha256sum -c - \
+ && echo 'a1dc8b11b35ab6b7763935898ec45abf422e060517295a1dadc33b6e9eaad03a  pypairix.tar.gz' | sha256sum -c - \
+ && tar -xzf pairix.tar.gz \
+ && make -C pairix-0.3.9 -j2 \
+ && install -m 0755 pairix-0.3.9/bin/pairix pairix-0.3.9/bin/pairs_merger pairix-0.3.9/bin/streamer_1d /opt/cooler/bin/ \
+ && /opt/cooler/bin/python -m pip install ./pypairix.tar.gz tornado \
+ && /opt/cooler/bin/python -m pip check \
+ && install -d -m 0755 /opt/cooler/share/licenses/pairix /opt/cooler/share/doc/pairix \
+ && install -m 0644 pairix-0.3.9/LICENSE.txt /opt/cooler/share/licenses/pairix/LICENSE.txt \
+ && install -m 0644 pairix-0.3.9/README.md pairix-0.3.9/VERSION.txt /opt/cooler/share/doc/pairix/ \
+ && /opt/cooler/bin/python -m pip freeze --all > /opt/cooler/share/doc/cooler/requirements.freeze.txt \
+ && /opt/cooler/bin/python -m pip inspect > /opt/cooler/share/doc/cooler/python-inventory.json
 
-RUN set -eux; \
-    sed -i \
-      -e "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
-      -e "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
-      /etc/apt/sources.list.d/debian.sources; \
-    for attempt in 1 2 3 4 5; do \
-      if apt-get -o Acquire::Retries=5 update \
-       && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-            ca-certificates \
-            g++ \
-            gcc \
-            libc6-dev \
-            make \
-            tar; then \
-        break; \
-      fi; \
-      if [ "$attempt" = "5" ]; then exit 1; fi; \
-      apt-get clean; \
-      rm -rf /var/lib/apt/lists/*; \
-      sleep 5; \
-    done; \
-    rm -rf /var/lib/apt/lists/*
-
-WORKDIR /tmp/build/cooler
-
-RUN set -eux; \
-    python -m venv /opt/cooler; \
-    /opt/cooler/bin/python -m pip install --upgrade pip setuptools wheel; \
-    /opt/cooler/bin/python -m pip download --only-binary=:all: --no-deps --dest /tmp \
-      "cooler==${COOLER_VERSION}"; \
-    echo "${COOLER_WHEEL_SHA256}  /tmp/cooler-${COOLER_VERSION}-py3-none-any.whl" | sha256sum -c -; \
-    /opt/cooler/bin/python -m pip install --no-cache-dir \
-      "/tmp/cooler-${COOLER_VERSION}-py3-none-any.whl" \
-      biopython \
-      "dask[array,dataframe]" \
-      ipytree \
-      ipywidgets \
-      matplotlib \
-      psutil \
-      pysam; \
-    /opt/cooler/bin/python -m pip check; \
-    /opt/cooler/bin/python -c "import urllib.request; urllib.request.urlretrieve('${COOLER_SDIST_URL}', '/tmp/cooler-${COOLER_VERSION}.tar.gz')"; \
-    echo "${COOLER_SDIST_SHA256}  /tmp/cooler-${COOLER_VERSION}.tar.gz" | sha256sum -c -; \
-    tar -xzf "/tmp/cooler-${COOLER_VERSION}.tar.gz" --strip-components=1; \
-    mkdir -p /opt/cooler/share/doc/cooler /opt/cooler/share/licenses/cooler /opt/cooler/share/testdata; \
-    cp -a README.md CHANGES.md CITATION.cff pyproject.toml /opt/cooler/share/doc/cooler/; \
-    install -m 0644 LICENSE /opt/cooler/share/licenses/cooler/LICENSE; \
-    printf "%s\n" "${COOLER_VERSION}" > /opt/cooler/share/doc/cooler/VERSION; \
-    for f in \
-      tests/data/toy.chrom.sizes \
-      tests/data/toy.fasta \
-      tests/data/toy.pairs \
-      tests/data/toy.bins.8.bed \
-      tests/data/toy.symm.upper.2.bg2 \
-      tests/data/toy.symm.upper.2.cool \
-      tests/data/toy.symm.upper.2.mcool \
-      tests/data/hg19.bins.2000kb.bed.gz \
-      tests/data/hg19.GM12878-MboI.pairs.subsample.sorted.txt.gz \
-      tests/data/hg19.GM12878-MboI.pairs.subsample.sorted.txt.gz.tbi \
-      tests/data/hg19.GM12878-MboI.matrix.2000kb.cool; do \
-        cp -a "$f" /opt/cooler/share/testdata/; \
-    done; \
-    /opt/cooler/bin/cooler --version 2>&1 | grep -F "${COOLER_VERSION}" >/dev/null; \
-    /opt/cooler/bin/python -c "import cooler, Bio, dask, h5py, matplotlib, numpy, pandas, psutil, pysam, scipy; assert cooler.__version__ == '${COOLER_VERSION}'"; \
-    /opt/cooler/bin/cooler --help | grep -F "Type -h or --help after any subcommand" >/dev/null; \
-    /opt/cooler/bin/cooler load --help | grep -F "Create a cooler from a pre-binned matrix" >/dev/null; \
-    /opt/cooler/bin/cooler digest --help | grep -F "Generate fragment-delimited genomic bins" >/dev/null; \
-    /opt/cooler/bin/cooler show --help | grep -F "Display and browse a cooler in matplotlib" >/dev/null
-
-COPY docker/cooler_smoke.sh /opt/cooler/share/testdata/cooler_smoke.sh
-
-RUN set -eux; \
-    chmod 0755 /opt/cooler/share/testdata/cooler_smoke.sh; \
-    /opt/cooler/bin/python -m pip freeze --all > /opt/cooler/share/doc/cooler/requirements.freeze.txt
-
-FROM python:3.12-slim-bookworm
-
-ARG DEBIAN_MIRROR
-ARG DEBIAN_SECURITY_MIRROR
-
-ENV DEBIAN_FRONTEND=noninteractive
-ENV PYTHONNOUSERSITE=1
-ENV MPLBACKEND=Agg
-ENV OPENBLAS_NUM_THREADS=1
-ENV OMP_NUM_THREADS=1
-ENV XDG_CACHE_HOME=/tmp
-ENV PATH=/opt/cooler/bin:/usr/local/bin:/usr/bin:/bin
-ENV COOLER_HOME=/opt/cooler
-ENV COOLER_TESTDATA=/opt/cooler/share/testdata
-
-RUN set -eux; \
-    sed -i \
-      -e "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
-      -e "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
-      /etc/apt/sources.list.d/debian.sources; \
-    for attempt in 1 2 3 4 5; do \
-      if apt-get -o Acquire::Retries=5 update \
-       && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
-            bash \
-            bzip2 \
-            ca-certificates \
-            coreutils \
-            fontconfig \
-            fonts-dejavu-core \
-            gawk \
-            grep \
-            gzip \
-            libgomp1 \
-            libstdc++6 \
-            pigz \
-            sed \
-            tabix \
-            xz-utils; then \
-        break; \
-      fi; \
-      if [ "$attempt" = "5" ]; then exit 1; fi; \
-      apt-get clean; \
-      rm -rf /var/lib/apt/lists/*; \
-      sleep 5; \
-    done; \
-    rm -rf /var/lib/apt/lists/*
-
+FROM ${BASE}
+ENV DEBIAN_FRONTEND=noninteractive PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1 \
+    OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MPLBACKEND=Agg XDG_CACHE_HOME=/tmp \
+    PATH=/opt/cooler/bin:/usr/local/bin:/usr/bin:/bin \
+    COOLER_HOME=/opt/cooler COOLER_TESTDATA=/opt/cooler/share/testdata
+# Runtime APT has the same active-repository boundary described above.
+RUN apt-get -o Acquire::Retries=3 update \
+ && apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+      bash bzip2 ca-certificates coreutils fontconfig fonts-dejavu-core gawk \
+      grep gzip libgomp1 libstdc++6 pigz sed tabix xz-utils \
+ && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /opt/cooler /opt/cooler
-
-RUN set -eux; \
-    command -v cooler >/dev/null; \
-    command -v python >/dev/null; \
-    command -v python3 >/dev/null; \
-    command -v bgzip >/dev/null; \
-    command -v tabix >/dev/null; \
-    command -v sort >/dev/null; \
-    command -v gzip >/dev/null; \
-    command -v pigz >/dev/null; \
-    command -v bash >/dev/null; \
-    cooler --version 2>&1 | grep -F "0.10.4" >/dev/null; \
-    python -c "import cooler, Bio, dask, h5py, matplotlib, numpy, pandas, psutil, pysam, scipy; assert cooler.__version__ == '0.10.4'"; \
-    cooler --help | grep -F "Type -h or --help after any subcommand" >/dev/null; \
-    cooler load --help | grep -F "Create a cooler from a pre-binned matrix" >/dev/null; \
-    cooler csort --help | grep -F "Requires Unix tools" >/dev/null; \
-    /opt/cooler/share/testdata/cooler_smoke.sh /tmp/taf-cooler-runtime-check; \
-    rm -rf /tmp/taf-cooler-runtime-check
-
-WORKDIR /root
-
-ENV TAFFISH_ENV=TAFFISH
-ENV TAFFISH_NAME=cooler
+COPY docker/cooler_smoke.py /opt/cooler/share/cooler_smoke.py
+COPY docker/cooler_gui_smoke.py /opt/cooler/share/cooler_gui_smoke.py
+COPY docker/cooler-gui /opt/cooler/bin/cooler-gui
+# Explicit parent traversal matters with current BuildKit COPY semantics.
+RUN chmod 0755 /opt /opt/cooler /opt/cooler/share \
+ && chmod 0644 /opt/cooler/share/cooler_smoke.py /opt/cooler/share/cooler_gui_smoke.py \
+ && chmod 0755 /opt/cooler/bin/cooler-gui \
+ && cooler-gui --help >/dev/null \
+ && cooler --version | grep -Fx 'cooler, version 0.11.0' \
+ && python /opt/cooler/share/cooler_smoke.py buildtime
+# Rendering, full pipelines and interactive sessions are runtime checks only.
+WORKDIR /tmp
+ENV TAFFISH_ENV=TAFFISH TAFFISH_NAME=cooler

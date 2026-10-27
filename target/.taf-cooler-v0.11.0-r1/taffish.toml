@@ -1,0 +1,49 @@
+[package]
+name = "cooler"
+kind = "tool"
+version = "0.11.0"
+release = 1
+license = "Apache-2.0"
+main = "src/main.taf"
+
+[repository]
+url = "https://github.com/taffish/cooler"
+
+[command]
+name = "taf-cooler"
+
+[runtime]
+pipe = true
+command_mode = true
+
+[container]
+image = "ghcr.io/taffish/cooler:0.11.0-r1"
+dockerfile = "docker/Dockerfile"
+build_platforms = "linux/amd64,linux/arm64"
+
+[meta]
+domain = "bio"
+categories = ["Hi-C", "3d-genome", "matrix", "file-format", "genomics"]
+keywords = ["cooler", "Hi-C", "cool", "mcool", "scool", "HDF5", "contact matrix", "3D genome", "Open2C"]
+description = "cooler 0.11.0 command-line and Python runtime for storing, ingesting, querying, balancing, coarsening, and visualizing Hi-C contact matrices in .cool/.mcool HDF5 format."
+
+[upstream]
+name = "cooler"
+type = "github"
+repo = "open2c/cooler"
+homepage = "https://cooler.readthedocs.io/"
+repository = "https://github.com/open2c/cooler"
+release_url = "https://github.com/open2c/cooler/releases/tag/v0.11.0"
+downloads = "https://pypi.org/project/cooler/0.11.0/#files"
+version = "0.11.0"
+license = "BSD-3-Clause"
+citation = "Abdennur N, Mirny LA. Cooler: scalable storage for Hi-C data and other genomically labeled arrays. Bioinformatics (2020)."
+doi = "10.1093/bioinformatics/btz540"
+watch = "tags"
+strip_prefix = "v"
+
+[smoke]
+backend = "docker"
+timeout = 300
+exist = ["cooler", "cooler-gui", "python", "python3", "bgzip", "tabix", "pairix", "pairs_merger", "streamer_1d", "sort", "cat", "gzip", "pigz", "bash", "grep", "sed"]
+test = ["python /opt/cooler/share/cooler_smoke.py identity", "python /opt/cooler/share/cooler_smoke.py ingest", "python /opt/cooler/share/cooler_smoke.py matrix", "python /opt/cooler/share/cooler_smoke.py scool", "python /opt/cooler/share/cooler_smoke.py negative", "python /opt/cooler/share/cooler_smoke.py plot", "python /opt/cooler/share/cooler_gui_smoke.py invalid", "python /opt/cooler/share/cooler_gui_smoke.py service", "python /opt/cooler/share/cooler_gui_smoke.py interrupt", "python /opt/cooler/share/cooler_gui_smoke.py failure", "python /opt/cooler/share/cooler_gui_smoke.py output"]
