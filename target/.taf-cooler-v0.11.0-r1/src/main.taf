@@ -1,2 +1,0 @@
-<taf-app:container:ghcr.io/taffish/cooler:0.11.0-r1$@[docker/podman: --init]>
-cooler ::*ARGV*::

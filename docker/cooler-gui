@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -70,6 +71,78 @@ def owns_listener(pid, number):
     return False
 
 
+class Session:
+    """Anchor cleanup and log reads to our private directory, not a reused path."""
+    def __init__(self):
+        self.cleaned = False
+        self.parent = os.open("/tmp", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        self.fd = None
+        try:
+            self.root = Path(tempfile.mkdtemp(prefix="cooler-gui-", dir="/tmp"))
+            self.fd = os.open(self.root.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                              dir_fd=self.parent)
+            self.check()
+        except BaseException as error:
+            self.close()
+            # Allocation may have succeeded before opening/checking its fd.
+            # Preserve that path for recovery without claiming it was removed.
+            if hasattr(self, "root"):
+                raise OSError(f"session initialization failed; recovery directory: {self.root}; {error}") from error
+            raise
+
+    @staticmethod
+    def same(left, right):
+        return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+    def check(self):
+        if not self.same(os.lstat("/tmp"), os.fstat(self.parent)):
+            raise OSError("session parent identity changed; preserving recovery files")
+        current = os.stat(self.root.name, dir_fd=self.parent, follow_symlinks=False)
+        owned = os.fstat(self.fd)
+        if (not stat.S_ISDIR(current.st_mode) or not self.same(current, owned)
+                or owned.st_uid != os.geteuid() or stat.S_IMODE(owned.st_mode) != 0o700):
+            raise OSError("session identity/permissions changed; refusing path-based cleanup")
+
+    def tail(self):
+        # A replaced root/log symlink must not disclose an outside file.
+        self.check()
+        fd = os.open("webagg.log", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self.fd)
+        with os.fdopen(fd, "rb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise OSError("session log is not a regular file")
+            stream.seek(max(0, os.fstat(stream.fileno()).st_size - 10000))
+            return stream.read(10000).decode("utf-8", errors="replace")
+
+    def cleanup(self):
+        if self.cleaned:
+            return
+        self.check()
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise OSError("safe fd-relative cleanup is unavailable")
+        # Enumerate via the held descriptor. A concurrent root rename cannot
+        # redirect traversal into a replacement directory or outside symlink.
+        # Rewind before each pass: entries may have been added since opening
+        # the directory, or an earlier failed cleanup may have consumed it.
+        os.lseek(self.fd, 0, os.SEEK_SET)
+        for name in os.listdir(self.fd):
+            self.check()
+            entry = os.stat(name, dir_fd=self.fd, follow_symlinks=False)
+            if stat.S_ISDIR(entry.st_mode):
+                shutil.rmtree(name, dir_fd=self.fd)
+            else:
+                os.unlink(name, dir_fd=self.fd)
+        self.check()
+        os.rmdir(self.root.name, dir_fd=self.parent)
+        self.cleaned = True
+
+    def close(self):
+        for name in ("fd", "parent"):
+            fd = getattr(self, name, None)
+            if fd is not None:
+                os.close(fd)
+                setattr(self, name, None)
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("cool_uri", help="existing .cool or FILE::/resolutions/N")
@@ -111,11 +184,13 @@ def main():
         # can interrupt the startup card's own write and cause reentrant I/O.
     old = {s: signal.signal(s, stop) for s in (signal.SIGINT, signal.SIGTERM)}
     root = None
+    session = None
     child = None
     log = None
     code = 1
     try:
-        root = Path(tempfile.mkdtemp(prefix="cooler-gui-", dir="/tmp"))
+        session = Session()
+        root = session.root
         # mkdtemp is private at creation, independent of a permissive umask.
         config = root / "matplotlib"
         config.mkdir(mode=0o700)
@@ -179,9 +254,11 @@ def main():
         code = 128 + state["signal"] if state["signal"] else 1
     except Exception as error:
         emit(f"cooler-gui: {error}", error=True)
-        if log is not None and log.exists():
+        if session is not None and log is not None:
             try:
-                emit(log.read_text(errors="replace")[-10000:], error=True)
+                emit(session.tail(), error=True)
+            except FileNotFoundError:
+                pass
             except OSError as log_error:
                 emit(f"cooler-gui: cannot read session log: {log_error}", error=True)
         code = 128 + state["signal"] if state["signal"] else 1
@@ -207,9 +284,10 @@ def main():
                 cleanup_errors.append(f"WebAgg cleanup failed: {error}")
             finally:
                 try:
-                    if root is not None:
-                        # Only the private root allocated by this invocation.
-                        shutil.rmtree(root)
+                    if session is not None:
+                        if cleanup_errors:
+                            raise OSError(f"child termination unconfirmed; retained {root}")
+                        session.cleanup()
                 except OSError as error:
                     cleanup_errors.append(f"session cleanup failed: {error}")
                 finally:
@@ -219,14 +297,19 @@ def main():
                         code = 1
         try:
             if cleanup_errors:
-                emit("cooler-gui: " + "; ".join(cleanup_errors), error=True)
-            else:
+                emit("cooler-gui: " + "; ".join(cleanup_errors)
+                     + f"; recovery directory: {root}", error=True)
+            elif session is not None and session.cleaned:
                 emit("Cooler GUI stopped; session files removed.")
+            else:
+                emit("Cooler GUI stopped before session initialization completed; see diagnostics.", error=True)
         finally:
             if state["signal"]:
                 code = 128 + state["signal"]
             for sig, handler in old.items():
                 signal.signal(sig, handler)
+            if session is not None:
+                session.close()
     return code
 
 

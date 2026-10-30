@@ -1,0 +1,6 @@
+{
+  "artifact": "taf-cooler-v0.12.1-r1",
+  "schema": "taffish.build/v1",
+  "source_sha256": "0cae8dae86b17a80ad62799b2900fabd2007b8224249f354b140fde27b3f6456",
+  "wrapper_sha256": "205b9a03ab7b85d46ffeaec21649e732054948563b937a76b4146b014c87a7b5"
+}

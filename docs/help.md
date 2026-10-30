@@ -1,11 +1,10 @@
-taf-cooler 0.11.0-r1
+taf-cooler 0.12.1-r1
 
 Use cooler for local contact matrices; save plots or view them in a browser.
 Supply your own .cool/.mcool, pairs, bins, chromosome sizes and FASTA inputs.
 
 Quick start:
   taf-cooler --help
-  taf-cooler --version
   taf-cooler -- --help
   taf-cooler -- --version
   taf-cooler cooler load --help
@@ -19,10 +18,10 @@ Create and inspect:
   taf-cooler cooler show sample.cool chr1:0-1000000 --out chr1.png
 
 Pairs:
-  taf-cooler cooler csort --index tabix -c1 2 -p1 3 -c2 4 -p2 5 \
-    sample.pairs chrom.sizes -o sorted.pairs.gz
-  taf-cooler cooler cload tabix --nproc 4 chrom.sizes:10000 sorted.pairs.gz out.cool
-  Use --index pairix and cload pairix for a Pairix-indexed file.
+  taf-cooler cooler cload pairs -c1 2 -p1 3 -c2 4 -p2 5 \
+    chrom.sizes:10000 sample.pairs out.cool
+  csort was removed; cload pairs accepts unsorted pairs directly.
+  Existing indexed pairs: use cload tabix or cload pairix with the matching index.
 
 Paths and command mode:
   taf-cooler cooler info "'input with spaces.cool'"
@@ -59,9 +58,9 @@ Browser view (requires sample.cool from load above):
   If Linux Podman fails in pasta before startup, add --network slirp4netns
   to TAFFISH_PODMAN_RUN_ARGS (requires host slirp4netns); keep loopback -p.
   Remote: ssh -N -L 8765:127.0.0.1:8765 user@server
-  Press Ctrl-C to stop. Logs/cache are temporary and removed when stopped.
+  Press Ctrl-C to stop. Successful cleanup removes temporary logs/cache.
   Keep output open until ready; a failed startup message stops the session.
-  Closed output pipes do not prevent cleanup; INT/TERM still return 130/143.
+  Cleanup errors fail with a recovery path; never delete an unfamiliar directory.
   This viewer has no login or TLS: use localhost/SSH, never a public port.
   taf-cooler cooler-gui --help
   Use --out PNG/SVG/PDF for static output; raw show without --out is not a server.
@@ -81,6 +80,7 @@ Shared local reference input:
 
 Troubleshooting:
   Missing weights: run balance on a writable copy, or omit --balanced.
+  0.12: trans-only weights change; mean aggregation is replaced by sum/count.
   Port busy: choose another host port and update mapping and --host-port.
   For Apptainer change --port as well. Keep its default loopback --bind.
   A matrix that is too large: select a smaller region or coarser resolution.

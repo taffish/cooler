@@ -1,13 +1,13 @@
 # cooler
 
-TAFFISH packaging of [Cooler 0.11.0](https://github.com/open2c/cooler/releases/tag/v0.11.0),
+TAFFISH packaging of [Cooler 0.12.1](https://github.com/open2c/cooler/releases/tag/v0.12.1),
 the Open2C CLI/Python toolkit for local contact matrices. Default execution stays
 CLI-first. Static images and an opt-in Matplotlib WebAgg browser viewer are included.
 
 ## Identity and scope
 
-- Package: `cooler 0.11.0-r1`; command: `taf-cooler`.
-- Image: `ghcr.io/taffish/cooler:0.11.0-r1`; native Linux amd64 and arm64 targets.
+- Package: `cooler 0.12.1-r1`; command: `taf-cooler`.
+- Image: `ghcr.io/taffish/cooler:0.12.1-r1`; native Linux amd64 and arm64 targets.
 - Packaging license: Apache-2.0. Cooler license: BSD-3-Clause.
 - Official upstream source is unchanged; no algorithm or numerical patch.
 - Python 3.12, all published Cooler extras, Pairix/pypairix 0.3.9, bgzip/tabix,
@@ -16,7 +16,7 @@ CLI-first. Static images and an opt-in Matplotlib WebAgg browser viewer are incl
 ## Quick start
 
 After this version is published and indexed, install it with
-`taf update` followed by `taf install cooler 0.11.0-r1`.
+`taf update` followed by `taf install cooler 0.12.1-r1`.
 For an unpublished local candidate, use `taf build` and its frozen wrapper as
 shown below; do not assume the registry already contains this image.
 
@@ -51,7 +51,7 @@ Do not construct a command by interpolating untrusted shell text.
 | Task | Interface and boundary |
 | --- | --- |
 | Matrix ingestion | `load` BG2/COO; `cload pairs/tabix/pairix/hiclib` |
-| Pair preparation | `csort` with tabix or Pairix; explicit column mapping |
+| Pair preparation | `cload pairs` accepts unsorted pairs; external sorting is a separate workflow |
 | Bins and fragments | `makebins`, `digest` with local chromosome sizes/FASTA |
 | Matrix operations | `balance`, `coarsen`, `zoomify`, `merge` |
 | Inspection and HDF5 objects | `info/dump/ls/tree/attrs/cp/mv/ln` |
@@ -66,7 +66,17 @@ existing resolution, e.g. `sample.mcool::/resolutions/10000`.
 FASTA indexing may create `.fai` beside the FASTA: prepare it once or copy the
 input to writable scratch before `digest`.
 
-Pairix is now included because its official 0.3.9 release resolves the compiler
+| Input/output | Meaning |
+| --- | --- |
+| `chrom.sizes`, bins BED, pixels BG2/COO, pairs | Explicit local inputs; chromosome names/order and coordinate conventions must match. |
+| `sample.cool` | One HDF5 matrix with chromosome, bin and pixel tables; normal `load` output. |
+| `sample.mcool` | Multiple resolutions in one HDF5 file; select `::/resolutions/N`, not an unqualified file. |
+| `sample.scool` | Per-cell matrices; select `::/cells/ID`. This is not an analysis report. |
+| `dump` stdout | Tabular data; redirect to a host file. Select columns explicitly for fixed-schema consumers. |
+| `balance` weights | Added to the input matrix; copy a shared input before modifying it. |
+| `show --out` | A static image at the chosen output filename; the interactive viewer is a temporary service. |
+
+Pairix is included because its official 0.3.9 release resolves the compiler
 issue cited by Cooler's disabled extra. Its own source and Python distribution
 are independently checksum-pinned. Debian's current bgzip remains the default;
 Pairix's older bgzip is not placed on PATH.
@@ -76,14 +86,39 @@ identify the selected source, while Python package metadata reports pypairix
 0.3.9. Use `pairix --help`, not unsupported `--version`/`-V`, to inspect the CLI.
 
 ```sh
-taf-cooler cooler csort --index pairix -c1 2 -p1 3 -c2 4 -p2 5 \
-  sample.pairs chrom.sizes -o sorted.pairs.gz
-taf-cooler cooler cload pairix --nproc 4 chrom.sizes:10000 sorted.pairs.gz out.cool
+taf-cooler cooler cload pairs -c1 2 -p1 3 -c2 4 -p2 5 \
+  chrom.sizes:10000 sample.pairs out.cool
 ```
 
-For tabix, change both `--index pairix` and `cload pairix` to `tabix`.
+For already sorted/indexed input, use `cload tabix` or `cload pairix` with its
+matching index and chromosome order. Upstream removed `csort`; a separate
+pairtools workflow is recommended when sorted pairs are needed elsewhere.
 This app does not generate alignments or replace pairtools/Juicer pipelines.
 Legacy hiclib **input conversion** does not include the legacy hiclib analysis stack.
+
+### Changes when upgrading from 0.11
+
+This is the unmodified upstream 0.12 behavior, not a packaging algorithm patch:
+
+- The 0.12.1 patch reports an error if a parallel worker dies instead of waiting
+  indefinitely; reduce processes/chunk sizes when memory is insufficient.
+  Whole-number float bin sizes now produce integer coordinates. These paths
+  are covered by tiny regressions, not a production memory benchmark.
+- Trans-only balancing targets and filters, chromosome-end diagonal filtering,
+  and empty bins are corrected; weights can differ from 0.11. Keep old results
+  tied to their original version rather than assuming numerical equivalence.
+- `balance --no-rescale-marginals` retains the original marginal scale.
+- `cload pairs --field v=8:agg=sum_squares` supports exact summary statistics;
+  `mean`/`median` aggregators are rejected. Store sum and count, then divide.
+- `dump` includes every pixel column by default; select explicit columns if a
+  downstream parser expects only counts. Coarsen/zoomify retain requested fields.
+- `mv` only moves within one HDF5 file; use `cp` to copy between files.
+  Failed writes/overwrites retain the previous complete cooler.
+- `zoomify --legacy`, `cooler.sandbox` and deprecated append APIs are removed.
+  Custom multiprocessing callbacks must be picklable; lambdas are not supported.
+- Inputs are checked more strictly, including chromosome-end bounds, bin tiling,
+  duplicate pixels and integer overflow. Fix invalid inputs instead of bypassing
+  these checks. See the [upstream release](https://github.com/open2c/cooler/releases/tag/v0.12.1).
 
 ## Browser viewer
 
@@ -117,7 +152,8 @@ cropped matrix in the restored axes. This upstream behavior is retained.
 
 WebAgg retains its native fixed-size figure: on a narrow window scroll horizontally
 and vertically to reach the whole canvas and toolbar, or use a desktop window.
-PNG/SVG/PDF and the other non-PGF menu formats are supported. The upstream
+PNG/SVG browser export and PNG/JPG/SVG/PDF/PS/EPS static output are validated;
+other menu formats are retained from Matplotlib, not individually qualified. The upstream
 download button opens an image/document tab for some formats; save that result
 using the browser. **PGF is unsupported for this raster matrix through WebAgg**:
 upstream still lists PGF, but its streamed-PGF writer rejects raster graphics.
@@ -154,7 +190,7 @@ The app-owned helper supplies safe bind defaults, host URL/SSH instructions,
 unbuffered startup information, readiness tied to its own listening child,
 ongoing process supervision and bounded cleanup. It does not proxy or patch
 Cooler/Matplotlib code. All logs, font caches and configuration live in one
-private `/tmp/cooler-gui-*` directory, removed on exit. Failure prints the internal
+private `/tmp/cooler-gui-*` directory, removed after successful cleanup. Failure prints the internal
 log tail. Ctrl-C stops the attached foreground session (130); TERM to the
 attached runtime stops it (143). Killing only an outer generic launcher PID is
 not a supported service-manager contract. The viewer is not a persistent daemon.
@@ -163,6 +199,10 @@ leaving an unannounced server. Diagnostic write/flush failures never bypass
 owned child, port or session cleanup; closed stdout/stderr retain INT/TERM's
 130/143 status rather than Python's final-flush status 120. Keep output connected
 until ready. Logs are best effort when their output destination is unavailable.
+Cleanup checks the private directory's identity and uses descriptor-relative,
+non-symlink traversal. A replaced directory or uncertain child termination fails
+closed and preserves the recovery path; it is not reported as a successful stop.
+Do not remove a reported recovery path until its ownership and contents are checked.
 
 There is **no authentication or TLS**. Use localhost, SSH or a separately secured
 site proxy; matrix names, coordinates and metadata may be visible to visitors.
@@ -182,11 +222,11 @@ For local candidate development, use the frozen wrapper for a long-running GUI:
 taf build
 TAFFISH_CONTAINER_BACKEND=docker \
   TAFFISH_DOCKER_RUN_ARGS="-p 127.0.0.1:8765:8000" \
-  ./target/taf-cooler-v0.11.0-r1 cooler-gui sample.cool chr1:0-1000000 \
+  ./target/taf-cooler-v0.12.1-r1 cooler-gui sample.cool chr1:0-1000000 \
     --bind 0.0.0.0 --host-port 8765
 ```
 
-The current TAFFISH 0.11.0 Linux development runner was tested separately:
+On 2026-10-29, the TAFFISH 0.11.0 Linux development runner was tested separately:
 `taf run -b docker -- cooler load ...` generated a valid tiny matrix, but a
 long-running GUI reached container readiness while its starting/ready text
 remained buffered by `taf run`; PTY Ctrl-C returned 1, not 130. No owned container
@@ -257,11 +297,23 @@ Manual installation has no app-owned transaction, lock, partial-cache deletion,
 Shared tiny-input read-only behavior is distinct from a real production assembly
 installation or scientific validation.
 
+### Backend-sensitive paths
+
+| Capability | Docker | Podman | Apptainer |
+| --- | --- | --- | --- |
+| Browser viewer | Container bind `0.0.0.0:8000`; host loopback `-p 127.0.0.1:8765:8000` | Same mapping; xjp uses explicit `--network slirp4netns` | Shared host network: loopback `--port 8765`, no `-p` |
+| Shared reference input | `-v /absolute/references:/references:ro` | Same read-only bind | `--bind /absolute/references:/references:ro` |
+| Process initialization | `--init` is already encoded in the app | `--init` is already encoded in the app | Native runtime handling; no Docker flag injection |
+
+The examples above select the corresponding `TAFFISH_*_RUN_ARGS`; ports and
+site paths are not hard-coded in the wrapper. Actual platform/backend evidence
+and untested combinations are recorded below, separately from these usage rules.
+
 ## Build provenance and reproducibility boundary
 
-- Cooler tag `v0.11.0`: commit `5506008e865545e53abd66447b953e75438b8340`.
-- Wheel SHA256: `c38930549945bb261174d0598528bc4139206e0e3053f4809f24ed4e673b2048`.
-- Sdist SHA256: `11a527bde867c31fe392589d0f947056b9200a70cdb033866ddfce3db031a91a`.
+- Cooler tag `v0.12.1`: commit `0b07e2330016e3b2710737c30a26fa7156a0a1e4`.
+- Wheel SHA256: `2d48b6e4cfbc10e3ef3e3a32ca51029806ed4a7ec4734b924b3d50ebf7780234`.
+- Sdist SHA256: `0298597dd630e77883314f795255abb815774a76732bcc8a4d3b2adc4bb3d05e`.
 - Pairix tag `0.3.9`: `5df7a5b0ae6a766c03d05bc10cfad7e49e43c607`.
 - Pairix archive SHA256: `84851aac4fe7aa74988a107ae7b93fbd4b191fd96459ca81fffbdbd39b041d2c`.
 - pypairix archive SHA256: `a1dc8b11b35ab6b7763935898ec45abf422e060517295a1dadc33b6e9eaad03a`.
@@ -285,30 +337,29 @@ build gates. Runtime cache is private scratch, not the installation tree.
 
 ## Validation status
 
-As of 2026-10-26 the local candidate's runtime validation is complete; it is
-prepared for maintainer publication, **not published**.
-Native builds passed: amd64 image 760,228,182 bytes; arm64 794,124,796 bytes.
-xjp's native Docker, Podman and Apptainer suites passed in full; ARM64 Docker
-and Podman also passed. Across the five native axes, 252 fresh/offline smoke
-checks and 165 real-wrapper checks passed on the rebuilt final images.
-All 25 GUI lifecycle checks and five extended format/dependency checks passed.
-The wrapper checks include eight actual output-failure scenarios per axis:
-first-write failures, closed stdout/stderr, INT/TERM and child failure. They
-verify owned-process, port and temporary-directory cleanup, unchanged inputs
-and recovery sentinels, and exit status 1/130/143 rather than 120. Separately,
-18 controlled early-signal/write/flush injections passed, including ENOSPC.
-Final real-wrapper browser rendering, zoom, refresh and PNG export also passed.
-The initial regression incorrectly assumed Apptainer's isolated /dev contained
-/dev/full; that test failure is retained. Portable closed-pipe tests replaced
-that device assumption, followed by final rebuilds and complete five-axis reruns.
-No engine restart, device exposure, quota or security change was needed for
-this repair. Earlier keyring/client failures and the original output-cleanup
-failure remain in the maintainer evidence, not hidden by the final results.
-A publish dry-run plans publication; it does not establish public
-Action/GHCR/Index success.
-ARM64 Apptainer is not inferred from the other five native axes. Production-scale
-datasets, external reference installation and scientific correctness remain outside
-the synthetic/tiny packaging checks.
+The 0.12.1-r1 candidate completed local packaging validation on 2026-10-29;
+actual publication remains a maintainer action. Both native builds and all 261
+independent offline manifest checks passed. xjp native amd64
+Docker/Podman/Apptainer and local ARM64 Docker/Podman passed 120 real-wrapper
+checks, 25 GUI lifecycle scenarios, and five groups each of extended and
+ordinary-user permission checks. These cover explicit reference binds, spaces,
+missing inputs, read-only sharing, and startup/ready INT/TERM cleanup.
+
+Earlier ARM64 Docker attempts were interrupted by the host filesystem-sharing
+service. After the maintainer restarted Docker, the same final image and frozen
+wrapper passed the complete remaining group without an engine-setting or app
+code change. Failed attempts are retained in maintainer evidence, not counted
+as PASS; this recovery does not establish a permanent Docker Desktop fix.
+Earlier release/0.12.0 results are not reused for this candidate.
+
+The current image sizes are 744,936,759 bytes (amd64) and 777,793,625 bytes
+(ARM64). Multi-stage packaging keeps build compilers out of the final image;
+the scientific Python closure accounts for most of the remaining size.
+Browser navigation, PNG/SVG export and narrow desktop-window scrolling passed
+on the current xjp wrapper; this is not mobile-responsive UI certification.
+ARM64 Apptainer is not separately validated. Production-scale data, external
+assembly installation and scientific accuracy are outside tiny packaging
+checks. Public Action/GHCR/Index evidence follows actual publication.
 
 Citation: Abdennur N, Mirny LA. Cooler: scalable storage for Hi-C data and other
 genomically labeled arrays. Bioinformatics (2020).

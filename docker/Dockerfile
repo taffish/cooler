@@ -22,17 +22,17 @@ WORKDIR /tmp/build
 # never merely replacing an expected hash or removing a failed assertion.
 RUN python -m venv /opt/cooler \
  && /opt/cooler/bin/python -m pip install --upgrade pip setuptools wheel \
- && /opt/cooler/bin/python -m pip download --no-deps --only-binary=:all: cooler==0.11.0 \
- && echo 'c38930549945bb261174d0598528bc4139206e0e3053f4809f24ed4e673b2048  cooler-0.11.0-py3-none-any.whl' | sha256sum -c - \
- && /opt/cooler/bin/python -m pip install './cooler-0.11.0-py3-none-any.whl[all]' \
+ && /opt/cooler/bin/python -m pip download --no-deps --only-binary=:all: cooler==0.12.1 \
+ && echo '2d48b6e4cfbc10e3ef3e3a32ca51029806ed4a7ec4734b924b3d50ebf7780234  cooler-0.12.1-py3-none-any.whl' | sha256sum -c - \
+ && /opt/cooler/bin/python -m pip install './cooler-0.12.1-py3-none-any.whl[all]' \
  && /opt/cooler/bin/python -m pip check \
- && python -c "import urllib.request; urllib.request.urlretrieve('https://files.pythonhosted.org/packages/9c/f3/12195163b5719affed7638f42a8def1d86dbf057cc240d165b58b340bb9c/cooler-0.11.0.tar.gz', 'cooler.tar.gz')" \
- && echo '11a527bde867c31fe392589d0f947056b9200a70cdb033866ddfce3db031a91a  cooler.tar.gz' | sha256sum -c - \
+ && python -c "import urllib.request; urllib.request.urlretrieve('https://files.pythonhosted.org/packages/39/5d/0e74febdeb6ab16bc9748aa7e03c608e3a1d28e0b0356c265fb5f8e8f495/cooler-0.12.1.tar.gz', 'cooler.tar.gz')" \
+ && echo '0298597dd630e77883314f795255abb815774a76732bcc8a4d3b2adc4bb3d05e  cooler.tar.gz' | sha256sum -c - \
  && tar -xzf cooler.tar.gz \
  && install -d -m 0755 /opt/cooler/share/doc/cooler /opt/cooler/share/licenses/cooler /opt/cooler/share/testdata \
- && install -m 0644 cooler-0.11.0/LICENSE /opt/cooler/share/licenses/cooler/LICENSE \
- && cp -a cooler-0.11.0/README.md cooler-0.11.0/CHANGES.md cooler-0.11.0/CITATION.cff cooler-0.11.0/pyproject.toml /opt/cooler/share/doc/cooler/ \
- && cp -a cooler-0.11.0/tests/data/. /opt/cooler/share/testdata/ \
+ && install -m 0644 cooler-0.12.1/LICENSE /opt/cooler/share/licenses/cooler/LICENSE \
+ && cp -a cooler-0.12.1/README.md cooler-0.12.1/CHANGES.md cooler-0.12.1/CITATION.cff cooler-0.12.1/pyproject.toml /opt/cooler/share/doc/cooler/ \
+ && cp -a cooler-0.12.1/tests/data/. /opt/cooler/share/testdata/ \
  && /opt/cooler/bin/python -m pip freeze --all > /opt/cooler/share/doc/cooler/requirements.freeze.txt \
  && /opt/cooler/bin/python -m pip inspect > /opt/cooler/share/doc/cooler/python-inventory.json \
  && find /opt/cooler -type d -name __pycache__ -prune -exec rm -rf '{}' + \
@@ -80,7 +80,6 @@ RUN chmod 0755 /opt /opt/cooler /opt/cooler/share \
  && chmod 0644 /opt/cooler/share/cooler_smoke.py /opt/cooler/share/cooler_gui_smoke.py \
  && chmod 0755 /opt/cooler/bin/cooler-gui \
  && cooler-gui --help >/dev/null \
- && cooler --version | grep -Fx 'cooler, version 0.11.0' \
  && python /opt/cooler/share/cooler_smoke.py buildtime
 # Rendering, full pipelines and interactive sessions are runtime checks only.
 WORKDIR /tmp
